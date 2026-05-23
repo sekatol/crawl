@@ -33,28 +33,28 @@ jobs:
 
   build_source:
     permissions:
-      contents: write #  for release creation (svenstaro/upload-release-action)
+      contents: read #  to fetch code (actions/checkout)
 
     name: Source Packages ${{ matrix.arch }}
     runs-on: ubuntu-latest
-    if: github.event.release.tag_name != null
+    # 移除 release 条件，始终运行
     steps:
       - uses: actions/checkout@v3
         with:
           fetch-depth: 0 # all history
           submodules: true
       - name: Fix tags for release # work around https://github.com/actions/checkout/issues/882
+        if: github.event.release.tag_name != null
         run: git fetch --depth=1 origin +refs/tags/*:refs/tags/* # will break on a lightweight tag
       - name: Build source packages
         run: make -j$(nproc) package-source
         working-directory: crawl-ref/source
-      - name: Add build to release
-        uses: svenstaro/upload-release-action@v2
+      - name: Upload source packages as artifact
+        uses: actions/upload-artifact@v4
         with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          tag: ${{ github.ref }}
-          file: stone_soup-${{ github.ref_name }}*
-          file_glob: true
+          name: source-packages
+          path: crawl-ref/source/stone_soup-*
+          if-no-files-found: error
 
   build_linux:
     permissions:
@@ -178,15 +178,11 @@ jobs:
         env:
           TERM: dumb
       # Upload an artifact containing the executable, core, and morgue if the tests crashed
-      # `failure()` ensures this step runs even if a failure (such as the one we want to catch) happens
-      # see https://docs.github.com/en/actions/reference/workflows-and-actions/expressions#failure
-      # `conclusion` will be 'skipped' if it didn't run, so the condition doesn't need to be repeated
-      # hashFiles ensures we only do this if there's a core file (can't test directly in a condition)
       - if: >-
           failure() &&
           steps.tests.conclusion == 'failure' &&
           hashFiles('crawl-ref/source/core') != ''
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: morgue-${{ matrix.compiler }}-${{ matrix.build_opts }}
           retention-days: 7
@@ -195,14 +191,21 @@ jobs:
             crawl-ref/source/saves/*.cs
             crawl-ref/source/crawl
             crawl-ref/source/core
+      # Upload the main executable as artifact
+      - name: Upload Linux executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: crawl-linux-${{ matrix.compiler }}-${{ matrix.build_opts }}-${{ matrix.debug }}-${{ matrix.build_all }}-tag_upgrade-${{ matrix.tag_upgrade }}
+          path: crawl-ref/source/crawl
+          if-no-files-found: error
 
   build_appimage:
     permissions:
-      contents: write #  for release creation (svenstaro/upload-release-action)
+      contents: read #  to fetch code (actions/checkout)
 
     name: Linux AppImage ${{ matrix.build_type }}
     runs-on: ubuntu-latest
-    if: github.event.release.tag_name != null
+    # 移除 release 条件，始终运行
     strategy:
       matrix:
         build_type:
@@ -222,6 +225,7 @@ jobs:
           fetch-depth: 0 # all history
           submodules: false
       - name: Fix tags for release # work around https://github.com/actions/checkout/issues/882
+        if: github.event.release.tag_name != null
         run: git fetch --depth=1 origin +refs/tags/*:refs/tags/* # will break on a lightweight tag
       - name: Install dependencies
         run: ./deps.py --build-opts "${{ matrix.build_opts }}" --appimage
@@ -239,27 +243,27 @@ jobs:
         run: "/usr/sbin/update-ccache-symlinks"
       - run: make -j$(nproc) ${{ matrix.build_opts }} appimage
         working-directory: crawl-ref/source
-      - name: Add build to release
-        uses: svenstaro/upload-release-action@v2
+      - name: Upload AppImage as artifact
+        uses: actions/upload-artifact@v4
         with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          tag: ${{ github.ref }}
-          file: crawl-ref/source/stone_soup-latest-linux-${{ matrix.build_type }}.x86_64.AppImage
-          asset_name: dcss-$tag-linux-${{ matrix.build_type }}.x86_64.AppImage
+          name: dcss-appimage-${{ matrix.build_type }}
+          path: crawl-ref/source/stone_soup-latest-linux-${{ matrix.build_type }}.x86_64.AppImage
+          if-no-files-found: error
 
   build_debian:
     permissions:
-      contents: write #  for release creation (svenstaro/upload-release-action)
+      contents: read #  to fetch code (actions/checkout)
 
     name: Debian Packages ${{ matrix.arch }}
     runs-on: ubuntu-latest
-    if: github.event.release.tag_name != null
+    # 移除 release 条件，始终运行
     steps:
       - uses: actions/checkout@v3
         with:
           fetch-depth: 0 # all history
           submodules: false
       - name: Fix tags for release # work around https://github.com/actions/checkout/issues/882
+        if: github.event.release.tag_name != null
         run: git fetch --depth=1 origin +refs/tags/*:refs/tags/* # will break on a lightweight tag
       - name: Install dependencies
         run: ./deps.py --build-opts TILES=1 --debian-packages
@@ -291,25 +295,23 @@ jobs:
       - name: Join the release files
         run: tar Jcvf "${GITHUB_WORKSPACE}/debian.tar.xz" crawl*
         working-directory: /var/cache/pbuilder/result
-      - name: Add build to release
-        uses: svenstaro/upload-release-action@v2
+      - name: Upload Debian packages as artifact
+        uses: actions/upload-artifact@v4
         with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          tag: ${{ github.ref }}
-          file: debian.tar.xz
-          asset_name: dcss-$tag-debian-all.tar.xz
+          name: debian-packages
+          path: debian.tar.xz
+          if-no-files-found: error
 
   build_macos:
     permissions:
-      contents: write #  for release creation (svenstaro/upload-release-action)
+      contents: read #  to fetch code (actions/checkout)
 
     name: macOS ${{ matrix.build_type }}
     runs-on: macos-latest
+    # 移除 release 条件，始终运行
     strategy:
       matrix:
         build_type:
-          # `tiles` and `console` can be used as build types to build a
-          # non-universal (x86_64, unless there are ever arm runners) binary
           - tiles-universal
           - console-universal
         build_opts:
@@ -340,43 +342,10 @@ jobs:
           auth_header="$(git config --local --get http.https://github.com/.extraheader)"
           git submodule sync --recursive
           git -c "http.extraheader=$auth_header" -c protocol.version=2 submodule update --init --force --recursive --depth=1
-      # Some extremely messy interactions between default runner setup and what
-      # brew may or may not do here. Many closed issues around this, here's one
-      # where a github actions contributor more or less says they won't fix it:
-      # https://github.com/actions/runner-images/issues/9471. The issues comes
-      # and goes depending on runner image versions. I believe I originally
-      # found the workaround step below somewhere in:
-      #   https://github.com/actions/setup-python/issues/577
-      # We have the problem because libpng has python as a dep.
-      # * Scenario 1: libpng forces brew to install python in `/usr/local/bin`.
-      #   Then we need to clear out the pre-provided symlinks or brew will fail.
-      #   Further steps use newly installed python.
-      # * Scenario 2: libpng is up-to-date in the current runner. For this case,
-      #   clearing out the links is safe because the runner's default path
-      #   should still include
-      #   `/Library/Frameworks/Python.framework/Versions/Current/bin/python`
-      #   (with a lower priority than `/usr/local/bin`) and pre-installed
-      #   python remains available.
-      # * For both scenarios, we should install pyyaml via pip, not brew, so
-      #   that it is installed for the correct python version. Installing it
-      #   via `brew` doesn't work right in scenario 2.
       - name: Python install bug workaround
         run: |
           find /usr/local/bin -type l -exec sh -c 'readlink -f "$1" \
           | grep -q ^/Library/Frameworks/Python.framework/Versions/' _ {} \; -exec rm -v {} \;
-      # this isn't needed with current GHA MacOS images
-      #- name: Install Dependencies
-      #  run: |
-      #    brew install pkg-config libpng
-      # To fix an error running new version of pip3 in virtualised environments.
-      # > You may restore the old behavior of pip by passing
-      # > the '--break-system-packages' flag to pip, or by adding
-      # > 'break-system-packages = true' to your pip.conf file. The latter
-      # > will permanently disable this error.
-      # > If you disable this error, we STRONGLY recommend that you additionally
-      # > pass the '--user' flag to pip, or set 'user = true' in your pip.conf
-      # > file. Failure to do this can result in a broken Homebrew installation.
-      # https://peps.python.org/pep-0668/
       - name: Install pyyaml
         run: pip3 install pyyaml --break-system-packages --user
       - name: diagnostic
@@ -394,21 +363,20 @@ jobs:
         run: "echo $(brew --prefix)/opt/ccache/libexec >> $GITHUB_PATH"
       - run: make -j$(sysctl -n hw.ncpu) mac-app-${{ matrix.build_type }} ${{matrix.build_opts }}
         working-directory: crawl-ref/source
-      - name: Add build to release
-        if: github.event.release.tag_name != null
-        uses: svenstaro/upload-release-action@v2
+      - name: Upload macOS zip as artifact
+        uses: actions/upload-artifact@v4
         with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          tag: ${{ github.ref }}
-          file: crawl-ref/source/mac-app-zips/latest.zip
-          asset_name: dcss-$tag-macos-${{ matrix.build_type}}.zip
+          name: dcss-macos-${{ matrix.build_type }}
+          path: crawl-ref/source/mac-app-zips/latest.zip
+          if-no-files-found: error
 
   build_mingw64_crosscompile:
     permissions:
-      contents: write #  for release creation (svenstaro/upload-release-action)
+      contents: read #  to fetch code (actions/checkout)
 
     name: mingw64 ${{ matrix.build_type }}
     runs-on: ubuntu-latest
+    # 移除 release 条件，始终运行
     strategy:
       matrix:
         build_type:
@@ -453,29 +421,24 @@ jobs:
         run: "/usr/sbin/update-ccache-symlinks"
       - run: make -j$(nproc) CROSSHOST=i686-w64-mingw32 package-windows-${{ matrix.build_type }}
         working-directory: crawl-ref/source
-      # The zip & installer targets create different sorts of names, so we need
-      # a little shell script magic here.
       - name: Determine release file names
-        if: github.event.release.tag_name != null
         id: release-names
         run: |
           if [[ ${{ matrix.build_type }} != installer ]] ; then
             source='crawl-ref/source/stone_soup-latest-${{ matrix.build_type}}-win32.zip'
-            dest='dcss-$tag-win32-${{ matrix.build_type}}.zip'
+            dest='dcss-${{ github.run_id }}-win32-${{ matrix.build_type}}.zip'
           else
             source='crawl-ref/source/stone_soup-latest-win32-installer.exe'
-            dest='dcss-$tag-win32-installer.exe'
+            dest='dcss-${{ github.run_id }}-win32-installer.exe'
           fi
           echo "source=${source}" >> $GITHUB_OUTPUT
           echo "dest=${dest}" >> $GITHUB_OUTPUT
-      - name: Add build to release
-        if: github.event.release.tag_name != null
-        uses: svenstaro/upload-release-action@v2
+      - name: Upload Windows build as artifact
+        uses: actions/upload-artifact@v4
         with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          tag: ${{ github.ref }}
-          file: ${{ steps.release-names.outputs.source }}
-          asset_name: ${{ steps.release-names.outputs.dest }}
+          name: mingw64-${{ matrix.build_type }}
+          path: ${{ steps.release-names.outputs.source }}
+          if-no-files-found: error
 
   build_msvc:
     # Note: since the project's code is GPLv2, which is an OSI approved license:
@@ -550,8 +513,14 @@ jobs:
         run: |
           msbuild /maxCpuCount /property:Configuration="${{ matrix.build_type }}" /p:Platform=${{ matrix.build_arch }} crawl-ref.sln
         working-directory: crawl-ref/source/MSVC
-      # TODO: Consider uploading artifacts
-      # TODO: Header tests? unit tests?
+      - name: Upload MSVC executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: msvc-${{ matrix.build_type }}-${{ matrix.build_arch }}
+          path: |
+            crawl-ref/source/MSVC/${{ matrix.build_arch }}/${{ matrix.build_type }}/crawl.exe
+            crawl-ref/source/MSVC/${{ matrix.build_arch }}/${{ matrix.build_type }}/crawl.pdb
+          if-no-files-found: warn
 
   codecov_catch2:
     permissions:
@@ -685,6 +654,7 @@ jobs:
         run: "/usr/sbin/update-ccache-symlinks"
       - run: make -j$(nproc) header-build-tests
         working-directory: crawl-ref/source
+      # No artifact upload because this job only compiles headers, no final executable.
 
   build_android:
     name: Android
@@ -733,6 +703,12 @@ jobs:
       - name: Build with Gradle
         run: gradle :app:assembleBuildTest
         working-directory: crawl-ref/source/android-project
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: crawl-ref/source/android-project/app/build/outputs/apk/buildTest/*.apk
+          if-no-files-found: error
 
   build_monster:
     permissions:
@@ -774,6 +750,12 @@ jobs:
         run: "/usr/sbin/update-ccache-symlinks"
       - run: make -j$(nproc) monster
         working-directory: crawl-ref/source
+      - name: Upload monster executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: monster-${{ matrix.compiler }}
+          path: crawl-ref/source/util/monster/monster
+          if-no-files-found: error
 
   build_docs:
     name: Build docs
